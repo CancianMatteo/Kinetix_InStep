@@ -1,59 +1,95 @@
-#include <BMI160Gen.h>            //https://github.com/hanyazou/BMI160-Arduino
 #include <Wire.h>
  
 // I2C Configuration for ESP32
-#define i2c_addr 0x68  // I2C address for BMI160 (with SAO pin → GND), connect to 3V3 for 0x69
-#define BMI160_sda_pin 22     // I2C D4(GPIO22) → SDA Pin for XIAO ESP32C6
-#define BMI160_scl_pin 23     // I2C D5(GPIO23) → SCL Pin for XIAO ESP32C6
-
-int ax, ay, az; // Raw accelerometer values
-int offset_ax=1070, offset_ay=-160, offset_az=16480; // Offset values for accelerometer
-int gx, gy, gz; // Raw gyroscope values
-int offset_gx=-25, offset_gy=-65, offset_gz=-40; // Offset values for gyroscope
+#define BMI160_I2C_ADDRESS 0x68  // I2C address for BMI160 (with SAO pin → GND), connect to 3V3 for 0x69
+#define BMI160_SDA_PIN 22     // I2C D4(GPIO22) → SDA Pin for XIAO ESP32C6
+#define BMI160_SCL_PIN 23     // I2C D5(GPIO23) → SCL Pin for XIAO ESP32C6
+#define ACCEL_SENSITIVITY 16384.0 // Sensitivity for ±2g in LSB/g (adjust based on your configuration)
  
 void setup() {
-  // Initialize Serial communication at 115200 baud rate
-  Serial.begin(115200);
+  Serial.begin(115200); // Initialize Serial communication
+  Wire.begin(BMI160_SDA_PIN, BMI160_SCL_PIN);         // Initialize I2C communication
  
-  // Initialize I2C with custom SDA and SCL pins
-  Wire.begin(sda_pin, scl_pin);
+  // Initialize BMI160 accelerometer
+  Wire.beginTransmission(BMI160_I2C_ADDRESS);
+  Wire.write(0x7E); // Command register
+  Wire.write(0x11); // Set accelerometer to normal mode
+  Wire.endTransmission();
+  delay(100);
  
-  // Initialize the BMI160 device in I2C mode
-  if (!BMI160.begin(BMI160GenClass::I2C_MODE, i2c_addr)) {
-    Serial.println("BMI160 initialization failed!");
-    while (1); // Halt if initialization fails
+  // Perform accelerometer auto-calibration
+  autoCalibrateAccelerometer();
+ 
+  Serial.println("BMI160 Initialized and Calibrated");
+}
+ 
+void loop() {
+  int16_t ax, ay, az;
+ 
+  // Read accelerometer data
+  Wire.beginTransmission(BMI160_I2C_ADDRESS);
+  Wire.write(0x12); // Start register for accelerometer data
+  Wire.endTransmission(false);
+  Wire.requestFrom(BMI160_I2C_ADDRESS, 6);
+ 
+  if (Wire.available() == 6) {
+    ax = (Wire.read() | (Wire.read() << 8));
+    ay = (Wire.read() | (Wire.read() << 8));
+    az = (Wire.read() | (Wire.read() << 8));
   }
  
-  Serial.println("BMI160 initialized successfully in I2C mode!");
-  delay(1000);
+  // Convert raw accelerometer values to m/s^2
+  float ax_mps2 = ax /ACCEL_SENSITIVITY *9.81;
+  float ay_mps2 = ay /ACCEL_SENSITIVITY *9.81;
+  float az_mps2 = az /ACCEL_SENSITIVITY *9.81;
+ 
+  // Print accelerometer values in m/s^2
+  Serial.print("Acceleration (m/s^2): ");
+  Serial.print(ax_mps2-0.1, 2);
+  Serial.print(", ");
+  Serial.print(ay_mps2+0.7, 2);
+  Serial.print(", ");
+  Serial.print(az_mps2, 2);
+  Serial.print(". \t");
 
-  // Set the accelerometer and gyroscope to normal mode with a range of ±2g and ±2000°/s respectively
-  BMI160.setAccelerometerNormalMode(BMI160GenClass::ACCEL_RANGE_2G, BMI160GenClass::ACCEL_BW_NORMAL);
+  // Convert raw accelerometer values to g
+  float ax_g = ax / ACCEL_SENSITIVITY;
+  float ay_g = ay / ACCEL_SENSITIVITY;
+  float az_g = az / ACCEL_SENSITIVITY;
+ 
+  // Calculate tilt angles (pitch and roll) in degrees
+  float pitch = atan2(ay_g, sqrt(ax_g * ax_g + az_g * az_g)) * 180.0 / PI;
+  float roll = atan2(-ax_g, az_g) * 180.0 / PI;
+ 
+  // Print tilt angles
+  Serial.print("Pitch: ");
+  Serial.print(pitch+4.5, 2);
+  Serial.print("°, Roll: ");
+  Serial.print(roll+178.6, 2);
+  Serial.println("°");
+ 
+  delay(500);
 }
 
-void loop() {
-  // Read raw accelerometer measurements from the BMI160
-  BMI160.readAccelerometer(ay, ax, az);  //TOCHANGE based on orientation
- 
-  // Read raw gyroscope measurements from the BMI160
-  BMI160.readGyro(gy, gx, gz);  //TOCHANGE based on orientation
- 
-  // Display the accelerometer values (X, Y, Z) on the Serial Monitor
-  Serial.print("Acc: ");
-  Serial.print(ax+offset_ax);
-  Serial.print(",  ");
-  Serial.print(ay+offset_ay);
-  Serial.print(",  ");
-  Serial.print(az+offset_az);
- 
-  // Display the gyroscope values (X, Y, Z) on the Serial Monitor
-  Serial.print("\tGyro: ");
-  Serial.print(gx+offset_gx);
-  Serial.print(",  ");
-  Serial.print(gy+offset_gy);
-  Serial.print(",  ");
-  Serial.println(gz+offset_gz);
+/**
+ * @brief Set the accelerometer and gyroscope to normal mode with a range of ±2g and ±2000°/s respectively
+ */
+/*void setBMI160NormalMode() {
+  BMI160.setAccelerometerRange(BMI160GenClass::ACCEL_RANGE_2);
+  BMI160.setAccelerometerRate(BMI160GenClass::ACCEL_BW_NORMAL);
+  BMI160.setGyroRange(BMI160GenClass::GYRO_RANGE_2000DPS);
+  BMI160.setGyroRate(BMI160GenClass::GYRO_BW_NORMAL);
+}*/
 
-  // Wait for 500ms before the next reading
-  delay(500);
+void autoCalibrateAccelerometer() {
+  // Configure accelerometer for auto-calibration
+  Wire.beginTransmission(BMI160_I2C_ADDRESS);
+  Wire.write(0x7E); // Command register
+  Wire.write(0x37); // Start accelerometer offset calibration
+  Wire.endTransmission();
+  delay(100);
+ 
+  // Wait for calibration to complete
+  delay(1000);
+  Serial.println("Accelerometer Auto-Calibration Complete");
 }
