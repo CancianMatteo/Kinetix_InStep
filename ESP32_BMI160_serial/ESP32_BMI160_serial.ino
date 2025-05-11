@@ -1,7 +1,7 @@
 #include <Wire.h>
  
 // I2C Configuration for ESP32
-#define BMI160_I2C_ADDRESS 0x68  // I2C address for BMI160 (with SAO pin → GND), connect to 3V3 for 0x69
+#define BMI160_I2C_ADDRESS 0x69  // I2C address for BMI160 (with SAO pin → disconnected or 3.3V), connect to GND for 0x68
 #define BMI160_SDA_PIN 22     // I2C D4(GPIO22) → SDA Pin for XIAO ESP32C6
 #define BMI160_SCL_PIN 23     // I2C D5(GPIO23) → SCL Pin for XIAO ESP32C6
 #define ACCEL_SENSITIVITY 16384.0 // Sensitivity for ±2g in LSB/g (adjust based on your configuration)
