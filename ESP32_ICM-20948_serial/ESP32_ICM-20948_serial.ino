@@ -24,8 +24,8 @@
 ICM20948_WE myIMU = ICM20948_WE(ICM20948_ADDR);
 
 void setup() {
-  Wire.begin();
   Serial.begin(115200);
+  Wire.begin();
   delay(500);
   
   while(!myIMU.init()){
