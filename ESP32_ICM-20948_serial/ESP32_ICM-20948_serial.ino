@@ -65,7 +65,7 @@ void setup() {
    * You can apply the offsets using:
    * setAccOffsets(xyzFloat yourOffsets) and setGyrOffsets(xyzFloat yourOffsets)
    */
-  Serial.println("Position your ICM20948 flat and don't move it - calibrating...");
+  Serial.println("Position your ICM20948 flat with the chip looking upward and don't move it - calibrating...");
   delay(500);
   myIMU.autoOffsets();
   delay(500);

@@ -1,5 +1,6 @@
 // === Librerie ===
 #include <WiFi.h>
+#define MQTT_MAX_PACKET_SIZE 16384  // increase max packet size before including PubSubClient
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <ICM20948_WE.h>
@@ -7,21 +8,21 @@
 #include <HardwareSerial.h>
 
 // === WiFi === (smartphone's hotspot)
-const char* ssid = "ssid";
-const char* password = "pwd";
+const char* ssid = "PC-MATTEO";
+const char* password = "matteooo";
 
 // === MQTT === (broker Mosquitto on Mac Air)
 const char* mqtt_server = "192.168.137.4";  // broker's IP address
 const char* mqtt_topic = "esp32/imugps";  // topic to publish data
-WiFiClient espClient;
-PubSubClient client(espClient);
+WiFiClient wifi_client;
+PubSubClient mqtt_client(wifi_client);
 
 // === ICM-20948 ===
 #define ICM20948_ADDR 0x68  // I2C address for BMI160 (with SAO pin → disconnected or 3.3V), connect to GND for 0x68
 #define IMU_SAMPLE_RATE 10
 ICM20948_WE myIMU = ICM20948_WE(ICM20948_ADDR);
 
-// === GPS M100-5883 ===
+// === GPS NEO-M8N ===
 TinyGPSPlus gps;
 HardwareSerial gpsSerial(1);
 #define GPS_SAMPLE_RATE 1
@@ -51,14 +52,14 @@ IMUData imuBuffer[IMU_SAMPLE_RATE*BUFFER_SIZE];
 int imuIndex = 0;
 GPSData gpsBuffer[GPS_SAMPLE_RATE*BUFFER_SIZE];
 int gpsIndex = 0;
-unsigned int lastPublish = 0;
+unsigned int lastPublish;
 
 // === Setup ===
 void setup() {
   Serial.begin(115200);
   Wire.begin();
 
-  // GPS (Serial1)
+  // GPS NEO-M8N
   gpsSerial.begin(9600, SERIAL_8N1, GPS_TX_PIN, GPS_RX_PIN);
   Serial.println("\nGPS is setting up...");
 
@@ -82,13 +83,15 @@ void setup() {
     Serial.print(".");
     delay(500);
   }
-  Serial.println("\nWiFi connected");
+  Serial.print("\nWiFi connected, IP: ");
+  Serial.println(WiFi.localIP());
+
   // MQTT
-  client.setServer(mqtt_server, 1883);
+  mqtt_client.setServer(mqtt_server, 1883);
   connectMQTT();
   
   // check GPS fix (wait up to 60sec)
-  for (int triesLeft = 60; !(gps.location.isValid() && gps.satellites.value()>=3) && triesLeft>0; triesLeft--) {
+  for (int triesLeft = 6; !(gps.location.isValid() && gps.satellites.value()>=3) && triesLeft>0; triesLeft--) {
     while (gpsSerial.available()) {
       gps.encode(gpsSerial.read());
     }
@@ -160,7 +163,7 @@ void config_ICM_20948(){
    * You can apply the offsets using:
    * setAccOffsets(xyzFloat yourOffsets) and setGyrOffsets(xyzFloat yourOffsets)
    */
-  Serial.println("Position your ICM20948 flat and don't move it - calibrating...");
+  Serial.println("Position your ICM20948 flat with the chip looking upward and don't move it - calibrating...");
   delay(500);
   myIMU.autoOffsets();
   delay(500);
@@ -308,7 +311,7 @@ void readGPS() {
 }
 
 void publishData() {
-  if (!client.connected()) {
+  if (!mqtt_client.connected()) {
     connectMQTT();
   }
 
@@ -338,18 +341,18 @@ void publishData() {
     payload += "\"lng\": " + String(gpsBuffer[i].lng, 6) + ",";
     payload += "\"sat\": " + String(gpsBuffer[i].sat) + ",";
     payload += "\"spd\": " + String(gpsBuffer[i].spd, 2) + "}";
-    if (i < imuIndex - 1) payload += ",";
+    if (i < gpsIndex - 1) payload += ",";
   }
   payload += "]}";
 
-  client.publish(mqtt_topic, payload.c_str(), true);
+  mqtt_client.publish(mqtt_topic, payload.c_str());
   Serial.println(payload);
 }
 
 void connectMQTT() {
   Serial.print("Connecting to MQTT broker..");
-  while (!client.connected()) {
-    if (client.connect("ESP32")) {
+  while (!mqtt_client.connected()) {
+    if (mqtt_client.connect("ESP32")) {
       Serial.println("\nMQTT connected");
     } else {
       Serial.print(".");

@@ -1,7 +1,8 @@
 import json
-from paho.mqtt.client import Client
+import paho.mqtt.client as mqtt
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+import signal
 
 # InfluxDB config
 INFLUX_URL = "192.168.137.4:8086"
@@ -12,6 +13,7 @@ INFLUX_BUCKET = "esp32"
 # MQTT config
 MQTT_BROKER = "192.168.137.4"
 MQTT_TOPIC = "esp32/imugps"
+MQTT_QoS = 2
 
 # InfluxDB client
 influx_client = InfluxDBClient(
@@ -20,6 +22,35 @@ influx_client = InfluxDBClient(
     org=INFLUX_ORG
 )
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code.is_failure:
+        print(f"\nFailed to connect: {reason_code}. loop_forever() will retry connection")
+    else:
+        # we should always subscribe from on_connect callback to be sure our subscription is persisted across reconnections.
+        client.subscribe(MQTT_TOPIC,MQTT_QoS)
+
+def signal_handler(sig, frame):
+    print('\nCtrl+C detected! Disconnecting...')
+    mqtt_client.unsubscribe(MQTT_TOPIC)
+    mqtt_client.disconnect()
+
+signal.signal(signal.SIGINT, signal_handler)
+
+def on_subscribe(client, userdata, mid, reason_code_list, properties):
+    # Since we subscribed only for a single channel, reason_code_list contains a single entry
+    if reason_code_list[0].is_failure:
+        print(f"\nBroker rejected you subscription: {reason_code_list[0]}")
+    else:
+        print(f"\nBroker granted the following QoS: {reason_code_list[0].value}")
+
+def on_unsubscribe(client, userdata, mid, reason_code_list, properties):
+    # The reason_code_list is only present in MQTTv5, in MQTTv3 it will always be empty
+    if len(reason_code_list) == 0 or not reason_code_list[0].is_failure:
+        print("\nSuccessfully unsubscribed!")
+    else:
+        print(f"\nBroker error: {reason_code_list[0]}")
+    client.disconnect()
 
 def on_message(client, userdata, msg):
     try:
@@ -49,9 +80,10 @@ def on_message(client, userdata, msg):
         print("❌ Error:", e)
 
 # Set up the MQTT client
-mqtt_client = Client()
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+mqtt_client.enable_logger()
 mqtt_client.on_message = on_message
-mqtt_client.connect(MQTT_BROKER, 1883, 60)
+mqtt_client.connect(MQTT_BROKER, 1883, 300)
 mqtt_client.subscribe(MQTT_TOPIC)
 
 # Start the MQTT loop
