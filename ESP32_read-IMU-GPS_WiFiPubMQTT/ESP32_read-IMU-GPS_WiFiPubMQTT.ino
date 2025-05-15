@@ -1,6 +1,5 @@
 // === Librerie ===
 #include <WiFi.h>
-#define MQTT_MAX_PACKET_SIZE 16384  // increase max packet size before including PubSubClient
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <ICM20948_WE.h>
@@ -8,8 +7,8 @@
 #include <HardwareSerial.h>
 
 // === WiFi === (smartphone's hotspot)
-const char* ssid = "PC-MATTEO";
-const char* password = "matteooo";
+const char* ssid = "ssid";
+const char* password = "pwd";
 
 // === MQTT === (broker Mosquitto on Mac Air)
 const char* mqtt_server = "192.168.137.4";  // broker's IP address
@@ -20,7 +19,7 @@ PubSubClient mqtt_client(wifi_client);
 // === ICM-20948 ===
 #define ICM20948_ADDR 0x68  // I2C address for BMI160 (with SAO pin → disconnected or 3.3V), connect to GND for 0x68
 #define IMU_SAMPLE_RATE 10
-ICM20948_WE myIMU = ICM20948_WE(ICM20948_ADDR);
+ICM20948_WE myIMU = ICM20948_WE(ICM20948_ADDR); 
 
 // === GPS NEO-M8N ===
 TinyGPSPlus gps;
@@ -29,7 +28,9 @@ HardwareSerial gpsSerial(1);
 #define GPS_RX_PIN 16     // D6(GPIO16) → RX
 #define GPS_TX_PIN 17     // D7(GPIO17) → TX
 
-#define BUFFER_SIZE 1       // [in seconds] are we gonna publish every 1 or 10 seconds?🤔
+#define BUFFER_SIZE 1       // [in seconds] are we gonna publish every 1, 4 or 10 seconds?🤔
+// Keep in mind that: sending bigger packets expose to great packet loss; the MQTT_MAX_PACKET_SIZE must be increased;
+//  in any case mosquitto can't handle more than 64KB (4seconds at 100Hz); the ESP32Cx has a limited heap memory.
 
 struct IMUData {
   float ax, ay, az;
@@ -52,7 +53,7 @@ IMUData imuBuffer[IMU_SAMPLE_RATE*BUFFER_SIZE];
 int imuIndex = 0;
 GPSData gpsBuffer[GPS_SAMPLE_RATE*BUFFER_SIZE];
 int gpsIndex = 0;
-unsigned int lastPublish;
+unsigned int nPublish=0;
 
 // === Setup ===
 void setup() {
@@ -88,6 +89,7 @@ void setup() {
 
   // MQTT
   mqtt_client.setServer(mqtt_server, 1883);
+  mqtt_client.setKeepAlive(300);
   connectMQTT();
   
   // check GPS fix (wait up to 60sec)
@@ -113,8 +115,9 @@ void setup() {
     Serial.print(gps.location.lng(), 6);
   }
 
-  
-  lastPublish = millis();
+  mqtt_client.setBufferSize(16384);
+  Serial.print("MQTT buffer size: ");
+  Serial.println(mqtt_client.getBufferSize());
 }
 
 // === Loop ===
@@ -130,11 +133,10 @@ void loop() {
     }
   }
 
-  if (millis() - lastPublish >= BUFFER_SIZE*1000) {
+  if (imuIndex == IMU_SAMPLE_RATE*BUFFER_SIZE) {
     publishData();
     imuIndex = 0;
     gpsIndex = 0;
-    lastPublish = millis();
   }
 }
 
@@ -315,8 +317,12 @@ void publishData() {
     connectMQTT();
   }
 
-  String payload = "{";
-  payload += "\"imu\": [";
+  if(ESP.getFreeHeap() < 16000) {
+    Serial.println("Free heap memory is low, not publishing data");
+    return;
+  }
+
+  String payload = "{\"imu\": [";
   for (int i = 0; i < imuIndex; i++) {
     payload += "\n\t{";
     payload += "\"ax\":" + String(imuBuffer[i].ax, 2) + ",";
@@ -345,8 +351,13 @@ void publishData() {
   }
   payload += "]}";
 
-  mqtt_client.publish(mqtt_topic, payload.c_str());
-  Serial.println(payload);
+  do{
+    mqtt_client.beginPublish(mqtt_topic, payload.length(), true);
+    mqtt_client.print(payload);
+  }while(!mqtt_client.endPublish());
+  Serial.print(++nPublish);
+  Serial.println("° message published successfully:");
+  Serial.println(payload); 
 }
 
 void connectMQTT() {
@@ -356,7 +367,7 @@ void connectMQTT() {
       Serial.println("\nMQTT connected");
     } else {
       Serial.print(".");
-      delay(500);
+      delay(100);
     }
   }
 }
