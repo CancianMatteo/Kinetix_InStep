@@ -2,7 +2,7 @@
 #include <Wire.h>
 
 void setup() {
-  Wire.begin(8, 9); // change to actual SDA, SCL used
+  Wire.begin(); // change to actual SDA, SCL used
   Serial.begin(115200);
   delay(1000);
 }

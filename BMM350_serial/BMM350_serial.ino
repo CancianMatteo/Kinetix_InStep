@@ -1,24 +1,15 @@
-#include <DFRobot_BMM350.h>
-#include <DFRobot_BMI160.h>
+#include "DFRobot_BMM350.h"
 
 DFRobot_BMM350_I2C bmm350(&Wire, I2C_ADDRESS);
-DFRobot_BMI160 bmi160;
 
-#define BMI160_I2C_ADDRESS_1 0x68 
-#define BMI160_I2C_ADDRESS_2 0x69
-
-void setup() 
+void setup()
 {
   Serial.begin(115200);
-  while (!Serial);
-
-
-  Serial.println("DFRobot BMM350 & BMI160 getCalibration");
-  while (bmm350.begin()) {
+  while(!Serial);
+  while(bmm350.begin()){
     Serial.println("bmm350 init failed, Please try again!");
-    delay(500);
-  }
-  Serial.println("bmm350 init success!");
+    delay(1000);
+  } Serial.println("bmm350 init success!");
 
   /**
    * Set sensor operation mode
@@ -30,6 +21,7 @@ void setup()
    *   eBmm350ForcedModeFast  // To reach ODR = 200Hz is only possible by using FM_ FAST.
    */
   bmm350.setOperationMode(eBmm350NormalMode);
+
   /**
    * Set preset mode, make it easier for users to configure sensor to get geomagnetic data (The default rate for obtaining geomagnetic data is 12.5Hz)
    * presetMode:
@@ -37,6 +29,11 @@ void setup()
    *   BMM350_PRESETMODE_REGULAR       // Regular mode, get a number of data and take the mean value.
    *   BMM350_PRESETMODE_ENHANCED      // Enhanced mode, get a plenty of data and take the mean value.
    *   BMM350_PRESETMODE_HIGHACCURACY  // High accuracy mode, get a huge number of take and draw the mean value.
+   */
+  bmm350.setPresetMode(BMM350_PRESETMODE_HIGHACCURACY, BMM350_DATA_RATE_3_125HZ);
+
+  /**
+   * Set the rate of obtaining geomagnetic data, the higher, the faster(without delay function)
    * rate:
    *   BMM350_DATA_RATE_1_5625HZ
    *   BMM350_DATA_RATE_3_125HZ
@@ -48,69 +45,31 @@ void setup()
    *   BMM350_DATA_RATE_200HZ
    *   BMM350_DATA_RATE_400HZ
    */
-  bmm350.setPresetMode(BMM350_PRESETMODE_HIGHACCURACY,BMM350_DATA_RATE_50HZ);
+  //bmm350.setRate(BMM350_DATA_RATE_12_5HZ);
+
   /**
    * Enable the measurement at x-axis, y-axis and z-axis, default to be enabled, no config required, the geomagnetic data at x, y and z will be inaccurate when disabled.
    * Refer to setMeasurementXYZ() function in the .h file if you want to configure more parameters.
    */
   bmm350.setMeasurementXYZ();
+  delay(1000);
 
-
-  // detect, set and init the bmi160 (soft reset included)
-  while (bmi160.I2cInit(BMI160_I2C_ADDRESS_1)!=BMI160_OK && bmi160.I2cInit(BMI160_I2C_ADDRESS_2)!=BMI160_OK){
-    Serial.println("init false");
-    delay(500);
-  }
-
-  //set the bmi160 range and sample rate
-  //bmi160.setSensConf(BMI160_ACCEL_SEL, BMI160_ACCEL_RANGE_16G, BMI160_ACCEL_ODR_50HZ);
-  //bmi160.setSensConf(BMI160_GYRO_SEL, BMI160_GYRO_RANGE_1000_DPS, BMI160_GYRO_ODR_50HZ);
-  /*DFRobot_BMI160::sBmm160SensorData_t accelConf;
-  accelConf.range = DFRobot_BMI160::eAccelRange_16G;
-  accelConf.odr = DFRobot_BMI160::eAccelODR_50Hz;
-  bmi160.setAccelConf(accelConf);
-
-  DFRobot_BMI160::sBmm160SensorData_t gyroConf;
-  gyroConf.range = DFRobot_BMI160::eGyroRange_1000DPS;
-  gyroConf.odr = DFRobot_BMI160::eGyroODR_50Hz;
-  bmi160.setGyroConf(gyroConf);*/
+  Serial.println(bmm350.getMeasurementStateXYZ());
+  Serial.print("Sample rate: ");
+  Serial.println(bmm350.getRate());
+  Serial.println(bmm350.getOperationMode());
 }
 
-int last_Read=0;
-int16_t accelGyro[6]={0}; 
-
-void loop() 
+void loop()
 {
-  while (millis()-last_Read<20);
-  last_Read = millis();
-
-  //get both accel and gyro data from bmi160 into the pointed array
-  if (bmi160.getAccelGyroData(accelGyro) != 0){
-    for (int i=0; i<6; i++){
-      accelGyro[i] = 0; 
-    }
-  }
-
   sBmm350MagData_t magData = bmm350.getGeomagneticData();
-    Serial.print("Raw:");
-    Serial.print(accelGyro[3]);
-    Serial.print(',');
-    Serial.print(accelGyro[4]);
-    Serial.print(',');
-    Serial.print(accelGyro[5]);
-    Serial.print(',');
-    Serial.print(accelGyro[0]);
-    Serial.print(',');
-    Serial.print(accelGyro[1]);
-    Serial.print(',');
-    Serial.print(accelGyro[2]);
-    Serial.print(',');
-    Serial.print(magData.x*10);
-    Serial.print(',');
-    Serial.print(magData.y*10);
-    Serial.print(',');
-    Serial.print(magData.z*10);
-    Serial.println();
-  
-  delay(10);
+  Serial.print("mag x = "); Serial.print(magData.x); Serial.println(" uT");
+  Serial.print("mag y = "); Serial.print(magData.y); Serial.println(" uT");
+  Serial.print("mag z = "); Serial.print(magData.z); Serial.println(" uT");
+
+  float compassDegree = bmm350.getCompassDegree();
+  Serial.print("the angle between the pointing direction and north (counterclockwise) is:");
+  Serial.println(compassDegree);
+  Serial.println("--------------------------------");
+  delay(320); // 320ms delay for 3.125Hz rate, adjust as needed for other rates
 }

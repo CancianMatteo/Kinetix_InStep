@@ -2,13 +2,11 @@
  
 // I2C Configuration for ESP32
 #define BMI160_I2C_ADDRESS 0x69  // I2C address for BMI160 (with SAO pin → disconnected or 3.3V), connect to GND for 0x68
-#define SDA_PIN 22     // I2C D4(GPIO22) → SDA Pin for XIAO ESP32C6
-#define SCL_PIN 23     // I2C D5(GPIO23) → SCL Pin for XIAO ESP32C6
 #define ACCEL_SENSITIVITY 16384.0 // Sensitivity for ±2g in LSB/g (adjust based on your configuration)
  
 void setup() {
   Serial.begin(115200); // Initialize Serial communication
-  Wire.begin(BMI160_SDA_PIN, BMI160_SCL_PIN);         // Initialize I2C communication
+  Wire.begin();         // Initialize I2C communication
  
   // Initialize BMI160 accelerometer
   Wire.beginTransmission(BMI160_I2C_ADDRESS);
@@ -34,7 +32,7 @@ void loop() {
  
   if (Wire.available() == 6) {
     ax = (Wire.read() | (Wire.read() << 8));
-    ay = (Wire.read() | (Wire.read() << 8));
+    ay = (Wire.read() | (Wire.read() << 8)); 
     az = (Wire.read() | (Wire.read() << 8));
   }
  
@@ -87,7 +85,6 @@ void autoCalibrateAccelerometer() {
   Wire.write(0x7E); // Command register
   Wire.write(0x37); // Start accelerometer offset calibration
   Wire.endTransmission();
-  delay(100);
  
   // Wait for calibration to complete
   delay(1000);
