@@ -12,7 +12,7 @@
 #include <Wire.h>
 #include <ICM20948_WE.h>
 
-#define ICM20948_ADDR 0x68  // 0x68 is I2C address for BMI160 (with AD0 pin disconnected or → GND), connect to 3.3V for 0x69
+#define ICM20948_ADDR 0x69  // 0x69 is I2C address for ICM-20948 (with AD0 pin → disconnected or 3.3V), connect to GND for 0x68
 
 /* There are several ways to create your ICM20948 object:
  * ICM20948_WE myIMU = ICM20948_WE()              -> uses Wire / I2C Address = 0x68
