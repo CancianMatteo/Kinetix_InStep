@@ -3,6 +3,7 @@
 #include <PubSubClient.h>
 #include <Wire.h>
 #include "BMM350.h"
+#include <ArduinoJson.h>
 
 // === WiFi === (smartphone's hotspot)
 const char* ssid = "ssid";
@@ -10,15 +11,23 @@ const char* password = "pwd";
 
 // === MQTT === (broker Mosquitto on Mac Air)
 const char* mqtt_server = "ip";  // broker's IP address
-const char* mqtt_topic = "topic";    // topic to publish data
+String mqtt_topic = "topic";    // topic to publish data
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
+
+// config
+String efuseMacStr;
+float hardIron[3] = {0, 0, 0};
+float softIron[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+String player, exercise_type;
+unsigned long config_time = 0;
+bool configReceived = false;
 
 // === BMI160 + BMM350 ===
 #define BMI160_I2C_ADDRESS 0x69
 #define BMM350_I2C_ADDRESS 0x14
 #define IMU_SAMPLE_RATE 100
-#define BUFFER_SIZE 1  // [in seconds] publish every n second
+#define BUFFER_SIZE 5  // [in seconds] publish every n second
 
 #define BUILTIN_USER_LED 21 // GPIO21 = LED giallo USER
 
@@ -81,11 +90,12 @@ void setup() {
   mqtt_client.setServer(mqtt_server, 1883);
   mqtt_client.setKeepAlive(300);
   connectMQTT();
-  mqtt_client.setBufferSize(16384);
+  mqtt_client.setBufferSize(65536);
   Serial.print("MQTT buffer size: ");
   Serial.println(mqtt_client.getBufferSize());
 
-  digitalWrite(USER_LED, LOW); // Turn off the LED after configuration
+  waitForConfig();
+  digitalWrite(BUILTIN_USER_LED, LOW); // Turn off the LED after configuration
 }
 
 // === Loop ===
@@ -115,6 +125,50 @@ void autoCalibrateAccelerometer() {
     delay(1000);
 }
 
+void callback(char* topic, byte* payload, unsigned int length) {
+  if (String(topic) == "init/config" && !configReceived) {
+    StaticJsonDocument<1024> doc;
+    DeserializationError err = deserializeJson(doc, payload, length);
+    if (err) {
+      Serial.println("JSON parse failed");
+      return;
+    }
+    if (!doc.containsKey(efuseMacStr)) return;
+    JsonObject obj = doc[efuseMacStr];
+    if (obj.containsKey("mqtt_topic")) mqtt_topic = obj["mqtt_topic"].as<String>();
+    if (obj.containsKey("hard_iron")) {
+      for (int i = 0; i < 3; i++)
+        hardIron[i] = obj["hard_iron"][i];
+    }
+    if (obj.containsKey("soft_iron")) {
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+          softIron[i][j] = obj["soft_iron"][i][j];
+    }
+    if (obj.containsKey("player")) player = obj["player"].as<String>();
+    if (obj.containsKey("exercise_type")) exercise_type = obj["exercise_type"].as<String>();
+    if (obj.containsKey("time")) config_time = obj["time"].as<unsigned long>();
+
+    // Apply calibration to magnetometer here if needed
+    magnetometer.setCalibration(hardIron, softIron);
+    configReceived = true;
+    Serial.println("Config received and applied.");
+  }
+}
+
+void waitForConfig() {
+  efuseMacStr = String((uint64_t)ESP.getEfuseMac(), HEX);
+  mqtt_client.setCallback(callback);
+  mqtt_client.subscribe("init/config");
+  Serial.println("Waiting for config on topic init/config...");
+  while (!configReceived) {
+    mqtt_client.loop();
+    delay(10);
+  }
+  mqtt_client.unsubscribe("init/config");
+  mqtt_client.setCallback(NULL); // Remove callback if not needed anymore
+}
+
 void readIMU() {
   float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0, mx = 0, my = 0, mz = 0;
 
@@ -126,17 +180,20 @@ void readIMU() {
   }
 }
 
-void publishData() {
+bool publishData() {
   if (!mqtt_client.connected()) {
     connectMQTT();
   }
 
-  if (ESP.getFreeHeap() < 16000) {
+  if (ESP.getFreeHeap() < 66000) {
     Serial.println("Free heap memory is low, not publishing data");
-    return;
+    return false;
   }
 
-  String payload = "{\"imu\": [";
+  String payload = "{\"player\":\"" + player + "\",";
+  payload += "\"exercise_type\":\"" + exercise_type + "\",";
+  payload += "\"time\":" + String(config_time) + ",";
+  payload += "\"imu\": [";
   for (int i = 0; i < imuIndex; i++) {
     payload += "\n\t{";
     payload += "\"ax\":" + String(imuBuffer[i].ax, 2) + ",";
@@ -153,12 +210,14 @@ void publishData() {
   payload += "]}";
 
   do {
-    mqtt_client.beginPublish(mqtt_topic, payload.length(), true);
+    mqtt_client.beginPublish(mqtt_topic.c_str(), payload.length(), true);
     mqtt_client.print(payload);
   } while (!mqtt_client.endPublish());
   Serial.print(++nPublish);
   Serial.println("° message published successfully:");
   Serial.println(payload);
+
+  return true;
 }
 
 void connectMQTT() {
