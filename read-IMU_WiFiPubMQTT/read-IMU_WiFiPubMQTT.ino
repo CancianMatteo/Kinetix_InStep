@@ -6,17 +6,17 @@
 #include <ArduinoJson.h>
 
 // === WiFi === (smartphone's hotspot)
-const char* ssid = "ssid";
-const char* password = "pwd";
+const char* ssid = "PC-MATTEO";
+const char* password = "matteooo";
 
 // === MQTT === (broker Mosquitto on Mac Air)
-const char* mqtt_server = "ip";  // broker's IP address
-String mqtt_topic = "topic";    // topic to publish data
+const char* mqtt_server = "192.168.137.212";  // broker's IP address
+String mqtt_topic = "calcio/prova";    // topic to publish data
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
 
 // config
-String efuseMacStr;
+String efuseMacStr = String((uint64_t)ESP.getEfuseMac(), HEX);
 float hardIron[3] = {0, 0, 0};
 float softIron[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
 String player, exercise_type;
@@ -24,10 +24,11 @@ unsigned long config_time = 0;
 bool configReceived = false;
 
 // === BMI160 + BMM350 ===
+#define MCU "ESP32S3"
 #define BMI160_I2C_ADDRESS 0x69
 #define BMM350_I2C_ADDRESS 0x14
-#define IMU_SAMPLE_RATE 100
-#define BUFFER_SIZE 5  // [in seconds] publish every n second
+#define IMU_SAMPLE_RATE 20
+#define BUFFER_SIZE 10  // [in seconds] publish every n second
 
 #define BUILTIN_USER_LED 21 // GPIO21 = LED giallo USER
 
@@ -42,7 +43,11 @@ struct IMUData {
 
 IMUData imuBuffer[IMU_SAMPLE_RATE * BUFFER_SIZE];
 int imuIndex = 0;
+String payload = ""; // Payload to be published via MQTT
 unsigned int nPublish = 0;
+
+TaskHandle_t publishDataTaskHandle;
+void publishDataTask(void *parameter);
 
 // === Setup ===
 void setup() {
@@ -86,13 +91,16 @@ void setup() {
   Serial.print("\nWiFi connected, IP: ");
   Serial.println(WiFi.localIP());
 
+  Serial.print("Free heap: ");
+  Serial.println(ESP.getFreeHeap());
+
   // MQTT
+  mqtt_client.setBufferSize(60000);
+  Serial.print("MQTT buffer size: ");
+  Serial.println(mqtt_client.getBufferSize());
   mqtt_client.setServer(mqtt_server, 1883);
   mqtt_client.setKeepAlive(300);
   connectMQTT();
-  mqtt_client.setBufferSize(65536);
-  Serial.print("MQTT buffer size: ");
-  Serial.println(mqtt_client.getBufferSize());
 
   waitForConfig();
   digitalWrite(BUILTIN_USER_LED, LOW); // Turn off the LED after configuration
@@ -102,15 +110,27 @@ void setup() {
 void loop() {
   static unsigned long lastTimeMeasure = 0;
   if (millis() - lastTimeMeasure >= 1000 / IMU_SAMPLE_RATE) {
+    if (millis() - lastTimeMeasure >= 2000 / IMU_SAMPLE_RATE) {
+      Serial.println("Warning⚠️: can't keep up with required IMU sample rate, system overloaded!");
+    }
     readIMU();
-    imuIndex++;
     lastTimeMeasure = millis();
+    delay(100);
   }
 
   if (imuIndex == IMU_SAMPLE_RATE * BUFFER_SIZE) {
     digitalWrite(BUILTIN_USER_LED, HIGH);
-    publishData();
+    payload = buildMQTTPayload();
+    if (payload.length() > 0) {
+      // Create a new task to publish data (delete previous task if it still exists)
+      if (publishDataTaskHandle != NULL) vTaskDelete(publishDataTaskHandle);
+
+      xTaskCreatePinnedToCore(publishDataTask, "Publish Data Task", 8192, NULL, 2, &publishDataTaskHandle, 1);
+    } else {
+      Serial.println("Failed to build payload, not publishing data.");
+    }
     imuIndex = 0;
+    payload = ""; // Clear payload after publishing
     digitalWrite(BUILTIN_USER_LED, LOW);
   }
 }
@@ -125,101 +145,189 @@ void autoCalibrateAccelerometer() {
     delay(1000);
 }
 
-void callback(char* topic, byte* payload, unsigned int length) {
+void callback(char* topic, byte* conf_payload, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
   if (String(topic) == "init/config" && !configReceived) {
     StaticJsonDocument<1024> doc;
-    DeserializationError err = deserializeJson(doc, payload, length);
+    DeserializationError err = deserializeJson(doc, conf_payload, length);
     if (err) {
       Serial.println("JSON parse failed");
       return;
     }
-    if (!doc.containsKey(efuseMacStr)) return;
-    JsonObject obj = doc[efuseMacStr];
-    if (obj.containsKey("mqtt_topic")) mqtt_topic = obj["mqtt_topic"].as<String>();
-    if (obj.containsKey("hard_iron")) {
-      for (int i = 0; i < 3; i++)
-        hardIron[i] = obj["hard_iron"][i];
-    }
-    if (obj.containsKey("soft_iron")) {
-      for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-          softIron[i][j] = obj["soft_iron"][i][j];
-    }
-    if (obj.containsKey("player")) player = obj["player"].as<String>();
-    if (obj.containsKey("exercise_type")) exercise_type = obj["exercise_type"].as<String>();
-    if (obj.containsKey("time")) config_time = obj["time"].as<unsigned long>();
+    if (doc.containsKey(efuseMacStr)) {
+      JsonObject obj = doc[efuseMacStr];
+      if (obj.containsKey("mqtt_topic")) mqtt_topic = obj["mqtt_topic"].as<String>();
+      if (obj.containsKey("hard_iron")) {
+        for (int i = 0; i < 3; i++)
+          hardIron[i] = obj["hard_iron"][i];
+      }
+      if (obj.containsKey("soft_iron")) {
+        for (int i = 0; i < 3; i++)
+          for (int j = 0; j < 3; j++)
+            softIron[i][j] = obj["soft_iron"][i][j];
+      }
+      if (obj.containsKey("player")) player = obj["player"].as<String>();
+      if (obj.containsKey("exercise_type")) exercise_type = obj["exercise_type"].as<String>();
+      if (obj.containsKey("time")) config_time = obj["time"].as<unsigned long>();
 
-    // Apply calibration to magnetometer here if needed
-    magnetometer.setCalibration(hardIron, softIron);
-    configReceived = true;
-    Serial.println("Config received and applied.");
+      // Apply calibration to magnetometer here if needed
+      magnetometer.setCalibration(hardIron, softIron);
+      configReceived = true;
+      Serial.println("Config received and applied.");
+    }
   }
 }
 
 void waitForConfig() {
-  efuseMacStr = String((uint64_t)ESP.getEfuseMac(), HEX);
   mqtt_client.setCallback(callback);
   mqtt_client.subscribe("init/config");
-  Serial.println("Waiting for config on topic init/config...");
+  Serial.print(efuseMacStr);
+  Serial.println(" waiting for config on topic init/config...");
+
+  unsigned long startTime = millis();
   while (!configReceived) {
     mqtt_client.loop();
-    delay(10);
+    delay(100);
+    if (millis() - startTime > 100000) { // Timeout after 100 seconds
+      Serial.println("Config not received, proceeding with default values.");
+      break;
+    }
   }
   mqtt_client.unsubscribe("init/config");
-  mqtt_client.setCallback(NULL); // Remove callback if not needed anymore
+  mqtt_client.setCallback(NULL); // Remove callback since it's not needed anymore (from now on the config is static, only sending data)
 }
 
+// === Read IMU Data ===
 void readIMU() {
   float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0, mx = 0, my = 0, mz = 0;
 
   readAccelGyroData(ax, ay, az, gx, gy, gz);
   magnetometer.readMagnetometerData(mx, my, mz);
 
+  /*// Validate data
+  if (isnan(ax) || isnan(ay) || isnan(az) || isnan(gx) || isnan(gy) || isnan(gz) || isnan(mx) || isnan(my) || isnan(mz)) {
+    Serial.println("Invalid IMU data, skipping...");
+    return;
+  }*/
+
   if (imuIndex < IMU_SAMPLE_RATE * BUFFER_SIZE) {
     imuBuffer[imuIndex] = {ax, ay, az, gx, gy, gz, mx, my, mz};
+    imuIndex++;
   }
 }
 
-bool publishData() {
+// === Build Message and Publish Data with MQTT ===
+String buildMQTTPayload() {
+  if (ESP.getFreeHeap() < 60000) {
+    Serial.println("Free heap memory is low, not publishing data");
+    return "";
+  }
+
+  // Reserve string capacity to reduce fragmentation
+  int estimatedSize = 500 + (imuIndex * 9 * 6); // 9 values * 6 chars avg per value
+  String pld;
+  pld.reserve(estimatedSize);
+  pld = "{\"player\":\"" + player + "\", \"source\":\"" + MCU + "-" + efuseMacStr + "\", \"exercise_type\":\"" + exercise_type + "\", \"time\":\"" + String(config_time) + "\", ";
+  pld += "\"imu\": {";
+
+  // Add arrays for each IMU field
+  pld += "\"ax\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].ax, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"ay\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].ay, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"az\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].az, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"gx\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].gx, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"gy\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].gy, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"gz\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].gz, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"mx\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].mx, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"my\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].my, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "],";
+
+  pld += "\"mz\":[";
+  for (int i = 0; i < imuIndex; i++) {
+    pld += String(imuBuffer[i].mz, 2);
+    if (i < imuIndex - 1) pld += ",";
+  }
+  pld += "]";
+
+  pld += "}}";
+  return pld;
+}
+
+void publishDataTask(void *parameter) {
+  const char* localPayload = payload.c_str(); // Copy payload to local variable
+
+  if(publishData(localPayload, payload.length()))
+    payload = "";
+  vTaskDelete(NULL); // Delete the task after publishing
+}
+
+bool publishData(const char* localPayload, int payloadLength) {
+  unsigned long startTime = millis();
+
   if (!mqtt_client.connected()) {
     connectMQTT();
   }
 
-  if (ESP.getFreeHeap() < 66000) {
-    Serial.println("Free heap memory is low, not publishing data");
-    return false;
-  }
-
-  String payload = "{\"player\":\"" + player + "\",";
-  payload += "\"exercise_type\":\"" + exercise_type + "\",";
-  payload += "\"time\":" + String(config_time) + ",";
-  payload += "\"imu\": [";
-  for (int i = 0; i < imuIndex; i++) {
-    payload += "\n\t{";
-    payload += "\"ax\":" + String(imuBuffer[i].ax, 2) + ",";
-    payload += "\"ay\":" + String(imuBuffer[i].ay, 2) + ",";
-    payload += "\"az\":" + String(imuBuffer[i].az, 2) + ",";
-    payload += "\"gx\":" + String(imuBuffer[i].gx, 2) + ",";
-    payload += "\"gy\":" + String(imuBuffer[i].gy, 2) + ",";
-    payload += "\"gz\":" + String(imuBuffer[i].gz, 2) + ",";
-    payload += "\"mx\":" + String(imuBuffer[i].mx, 2) + ",";
-    payload += "\"my\":" + String(imuBuffer[i].my, 2) + ",";
-    payload += "\"mz\":" + String(imuBuffer[i].mz, 2) + "}";
-    if (i < imuIndex - 1) payload += ",";
-  }
-  payload += "]}";
-
   do {
-    mqtt_client.beginPublish(mqtt_topic.c_str(), payload.length(), true);
-    mqtt_client.print(payload);
+    mqtt_client.beginPublish(mqtt_topic.c_str(), payloadLength, true);
+    mqtt_client.print(localPayload);
   } while (!mqtt_client.endPublish());
   Serial.print(++nPublish);
-  Serial.println("° message published successfully:");
-  Serial.println(payload);
+  Serial.print("° message published (");
+  Serial.print(millis() - startTime);
+  Serial.print("ms): ");
+  Serial.println(localPayload);
 
   return true;
 }
 
+// === Connect MQTT ===
 void connectMQTT() {
   Serial.print("Connecting to MQTT broker");
   while (!mqtt_client.connected()) {
@@ -232,6 +340,7 @@ void connectMQTT() {
   }
 }
 
+// === Helper Functions ===
 void readAccelGyroData(float &ax, float &ay, float &az, float &gx, float &gy, float &gz) {
   int16_t IMUCount[6];
   uint8_t rawData[12];
