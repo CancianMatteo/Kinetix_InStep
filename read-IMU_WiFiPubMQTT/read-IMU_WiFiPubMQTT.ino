@@ -14,22 +14,22 @@ const char* mqtt_server = "ip";  // broker's IP address
 String mqtt_topic = "calcio/prova";    // topic to publish data
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
+#define MQTT_MAX_PACKET_SIZE 60000 // Increase max packet size to handle larger payloads
 
 // config
+bool configReceived = false;
 String efuseMacStr = String((uint64_t)ESP.getEfuseMac(), HEX);
 float hardIron[3] = {0, 0, 0};
 float softIron[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
 String player, exercise_type;
-unsigned long config_time = 0;
-bool configReceived = false;
 
-#define MCU "ESP32S3"
+#define MCU "ESP32"
 #define BUILTIN_USER_LED 21 // GPIO21 = LED giallo USER
 // === BMI160 + BMM350 ===
 #define BMI160_I2C_ADDRESS 0x69
 #define BMM350_I2C_ADDRESS 0x14
-#define IMU_SAMPLE_RATE 20
-#define BUFFER_SIZE 5  // [in seconds] publish every n second
+#define IMU_SAMPLE_RATE 20    // advised not to exceed 100Hz
+#define PUBLISH_INTERVAL 5  // [in seconds] publish every n second
 
 BMM350 magnetometer(BMM350_I2C_ADDRESS); // or 0x15
 float aRes, gRes;
@@ -40,8 +40,9 @@ struct IMUData {
   float mx, my, mz;
 };
 
-IMUData imuBuffer[IMU_SAMPLE_RATE * BUFFER_SIZE];
+IMUData imuBuffer[IMU_SAMPLE_RATE * PUBLISH_INTERVAL];
 int imuIndex = 0;
+unsigned long nextSampleTime;
 String payload = ""; // Payload to be published via MQTT
 unsigned int nPublish = 0;
 
@@ -61,7 +62,7 @@ void setup() {
 
   // Initialize BMI160
   BMI160_begin();
-  autoCalibrateAccelerometer();
+  autoCalibrateIMU();
 
   aRes = 16.f / 32768.f;  // Accelerometer resolution
   gRes = 1000.f / 32768.f; // Gyroscope resolution
@@ -80,7 +81,7 @@ void setup() {
   Serial.println(ESP.getFreeHeap());
 
   // MQTT
-  mqtt_client.setBufferSize(60000);
+  mqtt_client.setBufferSize(MQTT_MAX_PACKET_SIZE);
   Serial.print("MQTT buffer size: ");
   Serial.println(mqtt_client.getBufferSize());
   mqtt_client.setServer(mqtt_server, 1883);
@@ -89,34 +90,53 @@ void setup() {
 
   waitForConfig();
   digitalWrite(BUILTIN_USER_LED, LOW); // Turn off the LED after configuration
+
+  Serial.println("Setup complete. Ready to read IMU data.");
+  nextSampleTime = millis();
 }
 
 // === Loop ===
 void loop() {
-  static unsigned long lastTimeMeasure = 0;
-  if (millis() - lastTimeMeasure >= 1000 / IMU_SAMPLE_RATE) {
-    if (millis() - lastTimeMeasure >= 2000 / IMU_SAMPLE_RATE) {
-      Serial.println("Warning⚠️: can't keep up with required IMU sample rate, system overloaded!");
+  // Time to sample?
+  if (millis() >= nextSampleTime) {
+    // Check if we missed more than one sample period
+    int missedSamples = (millis() - nextSampleTime) / (1000 / IMU_SAMPLE_RATE);
+    if (missedSamples > 0) {
+      Serial.printf("Warning⚠️: Missed %d samples\n", missedSamples);
     }
+    
+    // Read IMU data
     readIMU();
-    lastTimeMeasure = millis();
+    
+    nextSampleTime += (1000 / IMU_SAMPLE_RATE);   // Schedule next sample time
   }
 
   // Publish when buffer is full
-  if (imuIndex == IMU_SAMPLE_RATE * BUFFER_SIZE) {
+  if (imuIndex == IMU_SAMPLE_RATE * PUBLISH_INTERVAL) {
+    digitalWrite(BUILTIN_USER_LED, HIGH);
+    
+    unsigned long publishStartTime = millis();
     payload = buildMQTTPayload();
-    digitalWrite(BUILTIN_USER_LED, HIGH); // Turn on the LED while publishing
+    
     if (payload.length() > 0) {
-      publishData(payload);
+      if (publishData(payload)) {
+        Serial.printf("%d° message published (%lums)\n", 
+                      ++nPublish, millis() - publishStartTime);
+      }
     } else {
-      Serial.println("Failed to build payload, not publishing data.");
+      Serial.println("Failed to build payload");
     }
+    
     imuIndex = 0;
-    payload = ""; // Clear payload after publishing
+    payload = "";
     digitalWrite(BUILTIN_USER_LED, LOW);
   }
+
+  if (nextSampleTime - millis() > 0 )
+    delay(nextSampleTime - millis()); // Wait until next sample time
 }
 
+// === Start BMI160 ===
 void BMI160_begin() {
   writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x7E, 0xB6);  // Soft reset
   delay(100);
@@ -130,20 +150,22 @@ void BMI160_begin() {
   writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x43, 0x01);  // Gyroscope range ±1000dps
 }
 
-void autoCalibrateAccelerometer() {
+void autoCalibrateIMU() {
     // Configure accelerometer for auto-calibration
     Wire.beginTransmission(BMI160_I2C_ADDRESS);
-    Wire.write(0x7E); // Command register
-    Wire.write(0x37); // Start accelerometer offset calibration
+    writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x7E, 0x37); // Start accelerometer offset calibration
+    writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x69, 0x6F); // Write 0b01101111 (0b0gxxyyzz, see BMI160 datasheet pg. 78)
+    writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x7E, 0x03); // Trigger auto-calibration (issuing start_foc command)
     Wire.endTransmission();
     // Wait for calibration to complete
-    delay(1000);
+    delay(500);
 }
 
+// === Get Config via MQTT ===
 void callback(char* topic, byte* conf_payload, unsigned int length) {
   Serial.print("Message arrived on topic: ");
-  Serial.print(topic);
-  if (String(topic) == "init/config" && !configReceived) {
+  Serial.println(topic);
+  if (String(topic) == "init/config") {
     StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, conf_payload, length);
     if (err) {
@@ -164,7 +186,6 @@ void callback(char* topic, byte* conf_payload, unsigned int length) {
       }
       if (obj.containsKey("player")) player = obj["player"].as<String>();
       if (obj.containsKey("exercise_type")) exercise_type = obj["exercise_type"].as<String>();
-      if (obj.containsKey("time")) config_time = obj["time"].as<unsigned long>();
 
       // Apply calibration to magnetometer here if needed
       magnetometer.setCalibration(hardIron, softIron);
@@ -200,7 +221,7 @@ void readIMU() {
   readAccelGyroData(ax, ay, az, gx, gy, gz);
   magnetometer.readMagnetometerData(mx, my, mz);
 
-  if (imuIndex < IMU_SAMPLE_RATE * BUFFER_SIZE) {
+  if (imuIndex < IMU_SAMPLE_RATE * PUBLISH_INTERVAL) {
     imuBuffer[imuIndex] = {ax, ay, az, gx, gy, gz, mx, my, mz};
     imuIndex++;
   }
@@ -208,15 +229,15 @@ void readIMU() {
 
 // === Build Message and Publish Data with MQTT ===
 String buildMQTTPayload() {
-  if (ESP.getFreeHeap() < 60000) {
+  if (ESP.getFreeHeap() < MQTT_MAX_PACKET_SIZE+1000) {
     Serial.println("Free heap memory is low, not publishing data");
     return "";
   }
 
-  int estimatedSize = 500 + (imuIndex * 9 * 6); // 9 values * 6 chars avg per value
+  int estimatedSize = 500 + (imuIndex * 9 * 7); // 9 values * 7 chars avg per value
   String pld;
   pld.reserve(estimatedSize);
-  pld = "{\"player\":\"" + player + "\", \"source\":\"" + MCU + "-" + efuseMacStr + "\", \"exercise_type\":\"" + exercise_type + "\", \"time\":\"" + String(config_time) + "\", ";
+  pld = "{\"player\":\"" + player + "\", \"source\":\"" + MCU + "-" + efuseMacStr + "\", \"exercise_type\":\"" + exercise_type + "\", ";
   pld += "\"imu\": {";
 
   // Add arrays for each IMU field
@@ -299,22 +320,19 @@ bool publishData(const String& localPayload) {
     Serial.println("beginPublish failed");
     return false;
   }
-  size_t written = mqtt_client.print(localPayload);
+  
+  mqtt_client.print(localPayload);
   bool endOk = mqtt_client.endPublish();
+  
   if (!endOk) {
     Serial.println("endPublish failed");
     return false;
   }
-  Serial.print(++nPublish);
-  Serial.print("° message published (");
-  Serial.print(millis() - startTime);
-  Serial.print("ms): ");
-  Serial.println(localPayload);
-
+  
   return true;
 }
 
-// === Connect MQTT ===
+// === Other Functions ===
 void connectMQTT() {
   Serial.print("Connecting to MQTT broker");
   while (!mqtt_client.connected()) {
@@ -327,7 +345,6 @@ void connectMQTT() {
   }
 }
 
-// === Other Functions ===
 void readAccelGyroData(float &ax, float &ay, float &az, float &gx, float &gy, float &gz) {
   int16_t IMUCount[6];
   uint8_t rawData[12];
