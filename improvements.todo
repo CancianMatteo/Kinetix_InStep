@@ -1,0 +1,56 @@
+Hardware:
+Improve security: safer place for credentials; MQTT credentials; secure MQTT.
+Decrease size and weight: smaller sensors; power optimizations; smaller battery.
+Make a PCB with MCU and IMU all-in-one to further decrease size and improve robustness.
+
+Software:
+Optimize sketch; try async MQTT publish.
+Build a friendly UI that displays all the stats clearly.
+
+FIXES:
+1. WiFi Credentials
+Hardcoding sensitive information like WiFi credentials (ssid and password) in the sketch is a security risk.
+Instead: Use a configuration file stored on the device's filesystem (e.g., SPIFFS or LittleFS) to load credentials at runtime.
+Alternatively, implement a captive portal to allow users to input credentials dynamically.
+Example using SPIFFS:
+#include <SPIFFS.h>
+#include <WiFi.h>
+// Load WiFi credentials from SPIFFS
+void loadWiFiCredentials() {
+  if (!SPIFFS.begin(true)) {
+    Serial.println("Failed to mount SPIFFS");
+    return;
+  }
+  File file = SPIFFS.open("/wifi.txt", "r");
+  if (!file) {
+    Serial.println("Failed to open WiFi credentials file");
+    return;
+  }
+  String ssid = file.readStringUntil('\n');
+  String password = file.readStringUntil('\n');
+  file.close();
+  WiFi.begin(ssid.c_str(), password.c_str());
+}
+
+2. MQTT Authentication
+Your MQTT broker connection does not use authentication. Add username and password for the MQTT broker to secure the connection.
+Example:
+const char* mqtt_user = "mqtt_user";
+const char* mqtt_password = "mqtt_password";
+void connectMQTT() {
+  Serial.print("Connecting to MQTT broker...");
+  while (!mqtt_client.connected()) {
+    if (mqtt_client.connect("ESP32", mqtt_user, mqtt_password)) {
+      Serial.println("\nMQTT connected");
+    } else {
+      Serial.print(".");
+      delay(100);
+    }
+  }
+}
+
+3. Encrypt Communication
+Use TLS/SSL for MQTT communication to encrypt data in transit. This requires using an MQTT library that supports secure connections (e.g., PubSubClient with TLS).
+Example:
+mqtt_client.setServer(mqtt_server, 8883); // Port for secure MQTT
+mqtt_client.setSecure(true); // Enable TLS
