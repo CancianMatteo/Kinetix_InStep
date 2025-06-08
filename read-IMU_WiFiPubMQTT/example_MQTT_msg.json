@@ -2,7 +2,7 @@
     "player":"0",
     "source":"ESP32S3-70af9d9006e8",
     "exercise_type":"salto",
-    "time":"0",
+    "fromTime":"2025-06-08T11:43:25",
     "imu":{
         "ax":[
             -1.04,

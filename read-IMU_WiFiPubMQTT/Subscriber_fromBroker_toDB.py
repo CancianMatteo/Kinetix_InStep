@@ -6,7 +6,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 # InfluxDB config
 INFLUX_URL = "192.168.137.212:8086"
-INFLUX_TOKEN = "jzTVtFCrrRYGdMvdjXdorOreF-PplWoDiH-3b7XVWuhqNX23duEW7Cm5YfIKzvmLpXFX1Zs7jdWzMYevtyoFFw=="
+INFLUX_TOKEN = "token"
 INFLUX_ORG = "uniud"
 INFLUX_BUCKET = "calcio_motta"
 
@@ -21,6 +21,8 @@ influx_client = InfluxDBClient(
     org=INFLUX_ORG
 )
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+
+path = "/Users/matteocancian/Documents/UNIUD/Tirocinio/Kinetix_InStep/read-IMU_WiFiPubMQTT/"
 
 def on_message(client, userdata, msg):
     try:
@@ -62,8 +64,8 @@ def on_message(client, userdata, msg):
         print(f"✅ Written {len(points)} points to InfluxDB")
 
         # Log to CSV
-        csv_filename = f"{data['player']}_{data['exercise_type']}_{data['source']}.csv"
-        with open(csv_filename, mode='a', newline='') as csv_file:
+        csv_filename = f"{data['player']}_{data['exercise_type']}_{data['source']}_{data['fromTime']}.csv"
+        with open(path+csv_filename, mode='a', newline='') as csv_file:
             csv_writer = csv.writer(csv_file)
             for i in range(len(ax)):
                 csv_writer.writerow([ax[i], ay[i], az[i], gx[i], gy[i], gz[i], mx[i], my[i], mz[i]])

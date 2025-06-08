@@ -4,32 +4,44 @@
 #include <Wire.h>
 #include "BMM350.h"
 #include <ArduinoJson.h>
+#include <time.h>
 
 // === WiFi === (smartphone's hotspot)
 const char* ssid = "ssid";
 const char* password = "pwd";
 
 // === MQTT === (broker Mosquitto on Mac Air)
-const char* mqtt_server = "ip";  // broker's IP address
+const char* mqtt_server = "192.168.137.212";  // broker's IP address
 String mqtt_topic = "calcio/prova";    // topic to publish data
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
 #define MQTT_MAX_PACKET_SIZE 60000 // Increase max packet size to handle larger payloads
 
-// config
+// === Configuration ===
 bool configReceived = false;
 String efuseMacStr = String((uint64_t)ESP.getEfuseMac(), HEX);
 float hardIron[3] = {0, 0, 0};
 float softIron[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
 String player, exercise_type;
 
+// === Time ===
+const char* ntpServer1 = "it.pool.ntp.org";
+const char* ntpServer2 = "ntp1.inrim.it";
+const long gmtOffset_sec = 3600;      // UTC+1 for Italy/Venice (CET)
+const int daylightOffset_sec = 3600;  // +1 hour for summer time (CEST)             
+String fromTime;                      // When current buffer started collecting
+unsigned long lastNTPSync = millis();
+
 #define MCU "ESP32"
-#define BUILTIN_USER_LED 21 // GPIO21 = LED giallo USER
+#define BUILTIN_USER_LED 21     // GPIO21 = LED giallo USER
 // === BMI160 + BMM350 ===
 #define BMI160_I2C_ADDRESS 0x69
 #define BMM350_I2C_ADDRESS 0x14
-#define IMU_SAMPLE_RATE 20    // advised not to exceed 100Hz
-#define PUBLISH_INTERVAL 5  // [in seconds] publish every n second
+
+#define IMU_SAMPLE_RATE 20     // advised not to exceed 100Hz
+#define PUBLISH_INTERVAL 5      // [in seconds] publish every n second
+// IMU_SAMPLE_RATE * PUBLISH_INTERVAL ≤ 100 to avoid negative impact on performance (example 20Hz * 5s = 100 samples 👍)
+// going above 100 samples will most probably cause issues and delays with MQTT publish due to large payload size
 
 BMM350 magnetometer(BMM350_I2C_ADDRESS); // or 0x15
 float aRes, gRes;
@@ -62,7 +74,7 @@ void setup() {
 
   // Initialize BMI160
   BMI160_begin();
-  autoCalibrateIMU();
+  autoCalibrateBMI160();
 
   aRes = 16.f / 32768.f;  // Accelerometer resolution
   gRes = 1000.f / 32768.f; // Gyroscope resolution
@@ -89,7 +101,12 @@ void setup() {
   connectMQTT();
 
   waitForConfig();
+
+  configTimeWithNTP();
+
   digitalWrite(BUILTIN_USER_LED, LOW); // Turn off the LED after configuration
+
+  delay(1000); // Give some time before starting the loop
 
   Serial.println("Setup complete. Ready to read IMU data.");
   nextSampleTime = millis();
@@ -108,20 +125,34 @@ void loop() {
     // Read IMU data
     readIMU();
     
-    nextSampleTime += (1000 / IMU_SAMPLE_RATE);   // Schedule next sample time
+    nextSampleTime += (1000 / IMU_SAMPLE_RATE) * (missedSamples+1);   // Schedule next sample time (POLICY: sample losts are not recovered)
+  }
+
+  // Record the start time when we begin collecting a new buffer
+  if (imuIndex == 1) {
+    time_t bufferStartTime;  
+    time(&bufferStartTime);
+    fromTime = getISOTimestamp(bufferStartTime);
+
+    // Resync NTP time once per hour to prevent drift
+    if (millis() - lastNTPSync > 3600000) { // 1 hour
+      configTime(gmtOffset_sec, daylightOffset_sec, ntpServer1, ntpServer2);
+      lastNTPSync = millis();
+    }
   }
 
   // Publish when buffer is full
   if (imuIndex == IMU_SAMPLE_RATE * PUBLISH_INTERVAL) {
     digitalWrite(BUILTIN_USER_LED, HIGH);
     
-    unsigned long publishStartTime = millis();
+    unsigned long buildStartTime = millis();
     payload = buildMQTTPayload();
     
+    unsigned long publishStartTime = millis();
     if (payload.length() > 0) {
       if (publishData(payload)) {
-        Serial.printf("%d° message published (%lums)\n", 
-                      ++nPublish, millis() - publishStartTime);
+        Serial.printf("%d° message published (%lums, %lums)\n", 
+                      ++nPublish, publishStartTime - buildStartTime, millis() - publishStartTime);
       }
     } else {
       Serial.println("Failed to build payload");
@@ -132,7 +163,7 @@ void loop() {
     digitalWrite(BUILTIN_USER_LED, LOW);
   }
 
-  if (nextSampleTime - millis() > 0 )
+  if (nextSampleTime > millis())
     delay(nextSampleTime - millis()); // Wait until next sample time
 }
 
@@ -150,13 +181,10 @@ void BMI160_begin() {
   writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x43, 0x01);  // Gyroscope range ±1000dps
 }
 
-void autoCalibrateIMU() {
-    // Configure accelerometer for auto-calibration
-    Wire.beginTransmission(BMI160_I2C_ADDRESS);
-    writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x7E, 0x37); // Start accelerometer offset calibration
+void autoCalibrateBMI160() {
     writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x69, 0x6F); // Write 0b01101111 (0b0gxxyyzz, see BMI160 datasheet pg. 78)
+    writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x7E, 0x37); // Start accelerometer offset calibration
     writeByteI2C(Wire, BMI160_I2C_ADDRESS, 0x7E, 0x03); // Trigger auto-calibration (issuing start_foc command)
-    Wire.endTransmission();
     // Wait for calibration to complete
     delay(500);
 }
@@ -214,6 +242,43 @@ void waitForConfig() {
   mqtt_client.setCallback(NULL); // Remove callback if not needed anymore
 }
 
+// === Config Time ===
+void configTimeWithNTP() {
+  // Configure time with NTP servers
+  Serial.println("Configuring time with NTP...");
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer1, ntpServer2);
+  
+  // Wait for time to be set (max 10 seconds)
+  unsigned long startAttemptTime = millis();
+  time_t now = 0;
+  Serial.print("Waiting for NTP time sync");
+  while (time(&now) < 1600000000 && millis() - startAttemptTime < 10000) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  
+  // Display current time
+  if (now > 1600000000) {
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    Serial.print("Current time: ");
+    Serial.print(timeinfo.tm_year + 1900);
+    Serial.print("-");
+    Serial.print(timeinfo.tm_mon + 1);
+    Serial.print("-");
+    Serial.print(timeinfo.tm_mday);
+    Serial.print(" ");
+    Serial.print(timeinfo.tm_hour);
+    Serial.print(":");
+    Serial.print(timeinfo.tm_min);
+    Serial.print(":");
+    Serial.println(timeinfo.tm_sec);
+  } else {
+    Serial.println("Failed to get time from NTP, will use epoch time");
+  }
+}
+
 // === Read IMU Data ===
 void readIMU() {
   float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0, mx = 0, my = 0, mz = 0;
@@ -234,10 +299,13 @@ String buildMQTTPayload() {
     return "";
   }
 
-  int estimatedSize = 500 + (imuIndex * 9 * 7); // 9 values * 7 chars avg per value
+  int estimatedSize = 500 + (imuIndex * 9 * 6); // 9 values * 6 chars avg per value
   String pld;
   pld.reserve(estimatedSize);
-  pld = "{\"player\":\"" + player + "\", \"source\":\"" + MCU + "-" + efuseMacStr + "\", \"exercise_type\":\"" + exercise_type + "\", ";
+  pld = "{\"player\":\"" + player + "\", ";
+  pld += "\"source\":\"" + String(MCU) + "-" + efuseMacStr + "\", ";
+  pld += "\"exercise_type\":\"" + exercise_type + "\", ";
+  pld += "\"fromTime\":\"" + fromTime + "\", ";
   pld += "\"imu\": {";
 
   // Add arrays for each IMU field
@@ -309,22 +377,18 @@ String buildMQTTPayload() {
 }
 
 bool publishData(const String& localPayload) {
-  unsigned long startTime = millis();
-
   if (!mqtt_client.connected()) {
     connectMQTT();
   }
 
-  bool beginOk = mqtt_client.beginPublish(mqtt_topic.c_str(), localPayload.length(), true);
-  if (!beginOk) {
+  if (!mqtt_client.beginPublish(mqtt_topic.c_str(), localPayload.length(), true)) {
     Serial.println("beginPublish failed");
     return false;
   }
   
   mqtt_client.print(localPayload);
-  bool endOk = mqtt_client.endPublish();
   
-  if (!endOk) {
+  if (!mqtt_client.endPublish()) {
     Serial.println("endPublish failed");
     return false;
   }
@@ -383,4 +447,11 @@ void readBytesI2C(TwoWire &wire, uint8_t address, uint8_t subAddress, uint8_t co
   while (wire.available()) {
     dest[i++] = wire.read();
   }
+}
+
+String getISOTimestamp(time_t t) {
+  struct tm *tm = localtime(&t);
+  char buffer[20];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", tm);
+  return String(buffer);
 }
