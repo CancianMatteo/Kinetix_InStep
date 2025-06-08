@@ -60,8 +60,8 @@ unsigned int nPublish = 0;
 
 // === Setup ===
 void setup() {
-  pinMode(BUILTIN_USER_LED, OUTPUT);
-  digitalWrite(BUILTIN_USER_LED, HIGH); // Turn on the LED while configuring
+  pinMode(BUILTIN_USER_LED, OUTPUT);  // NB: XIAO use active low configuration for the user LED
+  digitalWrite(BUILTIN_USER_LED, LOW); // Turn on the LED while configuring
   Serial.begin(115200);
   Wire.begin();
 
@@ -104,7 +104,7 @@ void setup() {
 
   configTimeWithNTP();
 
-  digitalWrite(BUILTIN_USER_LED, LOW); // Turn off the LED after configuration
+  digitalWrite(BUILTIN_USER_LED, HIGH); // Turn off the LED after configuration
 
   delay(1000); // Give some time before starting the loop
 
@@ -143,7 +143,7 @@ void loop() {
 
   // Publish when buffer is full
   if (imuIndex == IMU_SAMPLE_RATE * PUBLISH_INTERVAL) {
-    digitalWrite(BUILTIN_USER_LED, HIGH);
+    digitalWrite(BUILTIN_USER_LED, LOW);
     
     unsigned long buildStartTime = millis();
     payload = buildMQTTPayload();
@@ -160,7 +160,7 @@ void loop() {
     
     imuIndex = 0;
     payload = "";
-    digitalWrite(BUILTIN_USER_LED, LOW);
+    digitalWrite(BUILTIN_USER_LED, HIGH);
   }
 
   if (nextSampleTime > millis())
