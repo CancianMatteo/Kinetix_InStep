@@ -106,7 +106,7 @@ void setup() {
 
   digitalWrite(BUILTIN_USER_LED, HIGH); // Turn off the LED after configuration
 
-  delay(1000); // Give some time before starting the loop
+  delay(100); // Give some time before starting the loop
 
   Serial.println("Setup complete. Ready to read IMU data.");
   nextSampleTime = millis();
@@ -452,6 +452,6 @@ void readBytesI2C(TwoWire &wire, uint8_t address, uint8_t subAddress, uint8_t co
 String getISOTimestamp(time_t t) {
   struct tm *tm = localtime(&t);
   char buffer[20];
-  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", tm);
+  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H-%M-%S", tm);
   return String(buffer);
 }
