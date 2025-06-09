@@ -1,7 +1,8 @@
 #include <TinyGPSPlus.h>
 
-#define GPS_RX_PIN 16     // D6(GPIO16) → RX
-#define GPS_TX_PIN 17     // D7(GPIO17) → TX
+// Nologo ESP32C3 SuperMini
+#define GPS_RX_PIN 21     // TX(GPIO21) → RX
+#define GPS_TX_PIN 20     // RX(GPIO20) → TX
 
 TinyGPSPlus gps;
 HardwareSerial gpsSerial(1);  // Use UART1 on ESP32
