@@ -10,7 +10,7 @@
 #include <Wire.h>
 #include <SparkFun_BNO08x_Arduino_Library.h>
 
-#define BNO08X_I2C_ADDR 0x4B // Default I2C address for BNO08x (AD0/SA0 low). Use 0x4B if high.
+#define BNO08X_I2C_ADDR 0x4B // Default I2C address for BNO08x (AD0 disconnected or ->3V3). Use 0x4A if connected to GND.
 #define SAMPLE_TIME 100
 
 BNO08x myIMU;
@@ -72,7 +72,7 @@ void setReports(void) {
       setReports();
       delay(100);
     }
-    
+
     if (myIMU.getSensorEvent()) {
       switch (myIMU.getSensorEventID()) {
         case SENSOR_REPORTID_ACCELEROMETER:
@@ -127,7 +127,7 @@ void loop() {
       gx = (gx*4+myIMU.getGyroX())/5.0;
       gy = (gy*4+myIMU.getGyroY())/5.0;
       gz = (gz*4+myIMU.getGyroZ())/5.0;
-      gAccuracy = (gAccuracy*4+myIMU.getGyroAccuracy()/5.0;
+      gAccuracy = (gAccuracy*4+myIMU.getGyroAccuracy())/5.0;
     }
 
     // Magnetometer

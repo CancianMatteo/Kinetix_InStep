@@ -1,7 +1,11 @@
 {
-    "70af9d9006e8":{
-      "mqtt_topic": "calcio/prova",
-      "player": "0",
-      "exercise_type": "salto"
-    }
+  "70af9d9006e8":{
+    "mqtt_topic": "calcio/prova",
+    "player": "0",
+    "exercise_type": "salto",
+    "hard_iron": [0.0, 0.0, 0.0],
+    "soft_iron": [[1.0, 0.0, 0.0],
+                  [0.0, 1.0, 0.0],
+                  [0.0, 0.0, 1.0]]
   }
+}

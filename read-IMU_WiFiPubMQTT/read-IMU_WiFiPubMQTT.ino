@@ -28,20 +28,20 @@ String player, exercise_type;
 const char* ntpServer1 = "it.pool.ntp.org";
 const char* ntpServer2 = "ntp1.inrim.it";
 const long gmtOffset_sec = 3600;      // UTC+1 for Italy/Venice (CET)
-const int daylightOffset_sec = 3600;  // +1 hour for summer time (CEST)             
+const int daylightOffset_sec = 3600;  // +1 hour for summer time (CEST), so in total +2 hours            
 String fromTime;                      // When current buffer started collecting
 unsigned long lastNTPSync = millis();
 
 #define MCU "ESP32"
 #define BUILTIN_USER_LED 21     // GPIO21 = LED giallo USER
-// === BMI160 + BMM350 ===
-#define BMI160_I2C_ADDRESS 0x69
-#define BMM350_I2C_ADDRESS 0x14
 
 #define IMU_SAMPLE_RATE 20     // advised not to exceed 100Hz
 #define PUBLISH_INTERVAL 5      // [in seconds] publish every n second
 // IMU_SAMPLE_RATE * PUBLISH_INTERVAL ≤ 100 to avoid negative impact on performance (example 20Hz * 5s = 100 samples 👍)
 // going above 100 samples will most probably cause issues and delays with MQTT publish due to large payload size
+
+#define BMI160_I2C_ADDRESS 0x69
+#define BMM350_I2C_ADDRESS 0x14
 
 BMM350 magnetometer(BMM350_I2C_ADDRESS); // or 0x15
 float aRes, gRes;
