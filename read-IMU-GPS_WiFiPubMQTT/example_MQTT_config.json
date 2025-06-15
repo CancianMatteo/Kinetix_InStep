@@ -1,0 +1,23 @@
+{
+    "70af9d9006e8":{
+      "mqtt_topic": "calcio/prova",
+      "player": "0",
+      "exercise_type": "salto",
+      "imu_calibration": {
+        "hard_iron_BMM350": [0.0, 0.0, 0.0],
+        "soft_iron_BMM350": [[1.0, 0.0, 0.0],
+                             [0.0, 1.0, 0.0],
+                             [0.0, 0.0, 1.0]],
+        "hard_iron_ICM20948": [0.0, 0.0, 0.0],
+        "soft_iron_ICM20948": [[1.0, 0.0, 0.0],
+                               [0.0, 1.0, 0.0],
+                               [0.0, 0.0, 1.0]]
+      },
+      "playground": {
+        "lat_low left": 45.123456,
+        "long_low_left": 9.123456,
+        "lat_high_right": 45.654321,
+        "long_high_right": 9.654321
+      }
+    }
+  }
