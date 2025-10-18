@@ -1,4 +1,5 @@
 // === Libraries ===
+#include "credentials.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
@@ -10,8 +11,8 @@
 #include <TinyGPSPlus.h>
 
 // === WiFi === (smartphone's hotspot)
-const char* ssid = "ssid";
-const char* password = "pwd";
+const char* ssid = WIFI_SSID; 
+const char* password = WIFI_PASSWORD;
 
 // === MQTT === (broker Mosquitto on Mac Air)
 const char* mqtt_server = "192.168.137.212";  // broker's IP address

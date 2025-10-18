@@ -12,8 +12,8 @@ extern "C"
 #include "freertos/timers.h"
 }
 
-#define ASYNC_TCP_SSL_ENABLED true
-#include <AsyncMQTT_ESP32.h>
+#include <WiFiClientSecure.h>
+#include <MQTT.h>
 
 // === WiFi === (smartphone's hotspot)
 const char* ssid = WIFI_SSID; 
@@ -25,12 +25,19 @@ String mqtt_topic = "calcio/prova";    // topic to publish data
 
 // SSL Configuration for secure config reception
 #define MQTT_SSL_PORT 8883
-#define MQTT_STANDARD_PORT 1883
+//#define MQTT_STANDARD_PORT 1883
 const uint8_t MQTT_SERVER_FINGERPRINT[] = {0x7e, 0x36, 0x22, 0x01, 0xf9, 0x7e, 0x99, 0x2f, 0xc5, 0xdb, 0x3d, 0xbe, 0xac, 0x48, 0x67, 0x5b, 0x5d, 0x47, 0x94, 0xd2};
 
-// MQTT Clients - one for secure config, one for fast data publishing
-AsyncMqttClient mqttClientSSL;    // For secure configuration
-AsyncMqttClient mqttClientData;   // For fast data publishing
+// TLS Root CA certificate (PEM). Replace with your broker's CA.
+static const char rootCACert[] PROGMEM = R"PEM(
+-----BEGIN CERTIFICATE-----
+PASTE_YOUR_CA_CERTIFICATE_PEM_HERE
+-----END CERTIFICATE-----
+)PEM";
+
+// MQTT Client - unified for both config and data (TLS over WiFiClientSecure)
+WiFiClientSecure netClient;
+MQTTClient mqttClient(4096);
 TimerHandle_t mqttReconnectTimer;
 TimerHandle_t wifiReconnectTimer;
 
@@ -101,26 +108,17 @@ void setup() {
 
   // Setup timers
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0,
-                                    reinterpret_cast<TimerCallbackFunction_t>(connectToMqttSSL));
+                                    reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0,
                                     reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
 
   // Setup WiFi event handler
   WiFi.onEvent(WiFiEvent);
 
-  // Setup MQTT SSL client for configuration
-  mqttClientSSL.onConnect(onMqttSSLConnect);
-  mqttClientSSL.onDisconnect(onMqttSSLDisconnect);
-  mqttClientSSL.onMessage(onMqttSSLMessage);
-  mqttClientSSL.setServer(mqtt_server, MQTT_SSL_PORT);
-  mqttClientSSL.setSecure(true);
-  mqttClientSSL.addServerFingerprint((const uint8_t *)MQTT_SERVER_FINGERPRINT);
-
-  // Setup MQTT Data client for IMU publishing
-  mqttClientData.onConnect(onMqttDataConnect);
-  mqttClientData.onDisconnect(onMqttDataDisconnect);
-  mqttClientData.setServer(mqtt_server, MQTT_STANDARD_PORT);
-  mqttClientData.setSecure(false);
+  // Configure TLS and MQTT client
+  netClient.setCACert(rootCACert);
+  mqttClient.begin(mqtt_server, MQTT_SSL_PORT, netClient);
+  mqttClient.onMessage(messageReceived);
 
   // Start WiFi connection
   connectToWifi();
@@ -150,6 +148,8 @@ void loop() {
     
     // Read IMU data
     readIMU();
+    // Service MQTT keep-alive and incoming messages
+    mqttClient.loop();
     
     nextSampleTime += (1000 / IMU_SAMPLE_RATE) * (missedSamples+1);   // Schedule next sample time (POLICY: sample losts are not recovered)
   }
@@ -366,26 +366,19 @@ String buildMQTTPayload() {
 }
 
 bool publishData(const String& localPayload) {
-  if (!mqttClientData.connected()) {
-    connectToMqttData();
-    // Wait a bit for connection
-    int attempts = 0;
-    while (!mqttClientData.connected() && attempts < 50) {
-      delay(100);
-      attempts++;
-    }
-    if (!mqttClientData.connected()) {
-      Serial.println("Failed to connect to MQTT Data broker");
+  if (!mqttClient.connected()) {
+    String clientId = String(MCU) + "-" + efuseMacStr;
+    if (!mqttClient.connect(clientId.c_str())) {
+      Serial.println("Failed to connect to MQTT broker");
       return false;
     }
+    mqttClient.subscribe("init/config", 2);
   }
-
-  uint16_t packetId = mqttClientData.publish(mqtt_topic.c_str(), 0, true, localPayload.c_str());
-  if (packetId == 0) {
+  bool ok = mqttClient.publish(mqtt_topic, localPayload, true, 0);
+  if (!ok) {
     Serial.println("Publish failed");
     return false;
   }
-  
   return true;
 }
 
@@ -443,69 +436,43 @@ void connectToWifi() {
   WiFi.begin(ssid, password);
 }
 
-void connectToMqttSSL() {
-  Serial.println("Connecting to MQTT SSL...");
-  mqttClientSSL.connect();
-}
-
-void connectToMqttData() {
-  Serial.println("Connecting to MQTT Data...");
-  mqttClientData.connect();
+void connectToMqtt() {
+  Serial.println("Connecting to MQTT (TLS)...");
+  String clientId = String(MCU) + "-" + efuseMacStr;
+  bool connected = mqttClient.connect(clientId.c_str());
+  if (connected) {
+    Serial.println("MQTT connected");
+    mqttClient.subscribe("init/config", 2);
+    Serial.print(efuseMacStr);
+    Serial.println(" waiting for config on topic init/config...");
+  } else {
+    Serial.println("MQTT connect failed");
+  }
 }
 
 void WiFiEvent(WiFiEvent_t event) {
   switch (event) {
-#if USING_CORE_ESP32_CORE_V200_PLUS
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.println("WiFi connected");
       Serial.print("IP address: ");
       Serial.println(WiFi.localIP());
-      connectToMqttSSL();
+      connectToMqtt();
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       Serial.println("WiFi lost connection");
       xTimerStop(mqttReconnectTimer, 0);
       xTimerStart(wifiReconnectTimer, 0);
       break;
-#else
-    case SYSTEM_EVENT_STA_GOT_IP:
-      Serial.println("WiFi connected");
-      Serial.print("IP address: ");
-      Serial.println(WiFi.localIP());
-      connectToMqttSSL();
-      break;
-    case SYSTEM_EVENT_STA_DISCONNECTED:
-      Serial.println("WiFi lost connection");
-      xTimerStop(mqttReconnectTimer, 0);
-      xTimerStart(wifiReconnectTimer, 0);
-      break;
-#endif
-    default:
-      break;
   }
 }
 
-// === MQTT SSL Callbacks (for configuration) ===
-void onMqttSSLConnect(bool sessionPresent) {
-  Serial.println("Connected to MQTT SSL broker for configuration");
-  mqttClientSSL.subscribe("init/config", 2);
-  Serial.print(efuseMacStr);
-  Serial.println(" waiting for config on topic init/config...");
-}
-
-void onMqttSSLDisconnect(AsyncMqttClientDisconnectReason reason) {
-  Serial.println("Disconnected from MQTT SSL");
-  if (WiFi.isConnected()) {
-    xTimerStart(mqttReconnectTimer, 0);
-  }
-}
-
-void onMqttSSLMessage(char* topic, char* conf_payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
-  Serial.print("SSL Message arrived on topic: ");
+// === MQTT Message Callback (for configuration) ===
+void messageReceived(String &topic, String &payload) {
+  Serial.print("MQTT Message arrived on topic: ");
   Serial.println(topic);
-  if (String(topic) == "init/config") {
+  if (topic == "init/config") {
     StaticJsonDocument<1024> doc;
-    DeserializationError err = deserializeJson(doc, conf_payload, len);
+    DeserializationError err = deserializeJson(doc, payload);
     if (err) {
       Serial.println("JSON parse failed");
       return;
@@ -529,22 +496,6 @@ void onMqttSSLMessage(char* topic, char* conf_payload, AsyncMqttClientMessagePro
       magnetometer.setCalibration(hardIron, softIron);
       configReceived = true;
       Serial.println("Config received and applied.");
-      
-      // Disconnect SSL client and connect data client
-      mqttClientSSL.disconnect();
-      connectToMqttData();
     }
-  }
-}
-
-// === MQTT Data Callbacks (for IMU data publishing) ===
-void onMqttDataConnect(bool sessionPresent) {
-  Serial.println("Connected to MQTT Data broker for publishing");
-}
-
-void onMqttDataDisconnect(AsyncMqttClientDisconnectReason reason) {
-  Serial.println("Disconnected from MQTT Data");
-  if (WiFi.isConnected()) {
-    connectToMqttData();
   }
 }
