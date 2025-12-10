@@ -1,4 +1,5 @@
-defines.h
+*credentials.h
+*.env
 
 # Prerequisites
 *.d

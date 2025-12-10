@@ -1,24 +1,24 @@
 {
   "70af9d9006e8": {
     "mqtt_topic": "calcio/prova",
+    "player": "Player1",
+    "exercise_type": "salto",
     "hard_iron": [0.0, 0.0, 0.0],
     "soft_iron": [
       [1.0, 0.0, 0.0],
       [0.0, 1.0, 0.0],
       [0.0, 0.0, 1.0]
-    ],
-    "player": "Player1",
-    "exercise_type": "salto"
+    ]
   },
-  "another_mac_here": {
+  "ec879990a994": {
     "mqtt_topic": "calcio/player2",
+    "player": "Player2",
+    "exercise_type": "corsa",
     "hard_iron": [10.5, -5.2, 8.1],
     "soft_iron": [
       [1.02, 0.01, 0.02],
       [0.01, 0.98, 0.01],
       [0.02, 0.01, 1.01]
-    ],
-    "player": "Player2",
-    "exercise_type": "corsa"
+    ]
   }
 }
