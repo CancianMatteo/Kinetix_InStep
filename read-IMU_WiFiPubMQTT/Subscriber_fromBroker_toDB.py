@@ -5,10 +5,14 @@ from datetime import datetime, timedelta
 from paho.mqtt.client import Client
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # InfluxDB config
 INFLUX_URL = "192.168.137.212:8086"
-INFLUX_TOKEN = "token"
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN")
 INFLUX_ORG = "uniud"
 INFLUX_BUCKET = "calcio_motta"
 

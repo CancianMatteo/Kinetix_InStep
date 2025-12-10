@@ -1,4 +1,5 @@
 credentials.h
+*.env
 
 # Prerequisites
 *.d
